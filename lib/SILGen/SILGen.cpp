@@ -687,6 +687,84 @@ emitMarkFunctionEscapeForTopLevelCodeGlobals(SILLocation loc,
     TopLevelSGF->B.createMarkFunctionEscape(loc, Captures);
 }
 
+/// SWIFT_ENABLE_TENSORFLOW
+IntRange<unsigned> SILGenModule::
+getLoweredFunctionParameterIndex(unsigned paramIndex, AnyFunctionType *ty) {
+  // Returns the number of types the given type will be flattened into as a
+  // function parameter during SILGen.
+  std::function<unsigned(Type)> getNumFlattenedTypes;
+  getNumFlattenedTypes = [&](Type type) {
+    if (auto *tupleTy = type->getAs<TupleType>()) {
+      return accumulate(tupleTy->getElementTypes(), 0,
+                        [&](unsigned prev, Type eltTy) {
+                          return prev + getNumFlattenedTypes(eltTy);
+                        });
+    }
+    return 1;
+  };
+  // Starting from the first parameter index (0), increment `startIndex` until
+  // we find the first corresponding argument index for the given function
+  // parameter index.
+  unsigned startIndex = 0;
+  auto params = ty->getParams();
+  assert(paramIndex < params.size() && "Parameter index out of bounds!");
+  for (unsigned i = 0; i != paramIndex; ++i) {
+    auto paramTy = params[i].getType()->getCanonicalType();
+    startIndex += getNumFlattenedTypes(paramTy);
+  }
+  // Compute the offset from the given parameter's first corresponding argument
+  // index to the last corresponding argument index.
+  unsigned offset =
+    getNumFlattenedTypes(params[paramIndex].getType()->getCanonicalType());
+  return range(startIndex, startIndex + offset);
+}
+
+/// SWIFT_ENABLE_TENSORFLOW
+/// Given a @differentiable attribute and the function declaration that holds
+/// this attribute, this function returns the lowered (SIL) parameter indices
+/// to differentiate with respect to.
+static
+void getLoweredDifferentiationIndices(SILGenModule &SGM,
+                                      const AbstractFunctionDecl *AFD,
+                                      const SILFunction *F,
+                                      const DifferentiableAttr *DA,
+                                      SmallVectorImpl<unsigned> &indices) {
+  auto fnTy =
+    AFD->getInterfaceType()->getCanonicalType()->getAs<AnyFunctionType>();
+  // We don't diff wrt `self` unless it is explicitly specified, therefore
+  // dropping the last SIL parameter if it's a method.
+  if (AFD->getImplicitSelfDecl())
+    fnTy = fnTy->getResult()->getAs<AnyFunctionType>();
+  // If no parameters are specified, add all parameter indices.
+  if (DA->getParameters().empty()) {
+    for (unsigned i = 0, n = fnTy->getNumParams(); i != n; ++i)
+      for (unsigned paramIdx : SGM.getLoweredFunctionParameterIndex(i, fnTy))
+        indices.push_back(paramIdx);
+    return;
+  }
+  // Otherwise, convert differentiation parameters.
+  bool hasSelf = false;
+  for (auto param : DA->getParameters()) {
+    switch (param.getKind()) {
+    // Normal index maps directly to a SIL parameter index.
+    case AutoDiffParameter::Kind::Index: {
+      auto idx = param.getIndex();
+      auto paramIdxRange = SGM.getLoweredFunctionParameterIndex(idx, fnTy);
+      indices.append(paramIdxRange.begin(), paramIdxRange.end());
+      break;
+    }
+    // 'self' is always the last SIL parameter.
+    case AutoDiffParameter::Kind::Self:
+      // Sema guarantees this case to occur at most once.
+      hasSelf = true;
+      break;
+    }
+  }
+  // The last SIL parameter is `self`, if needed.
+  if (hasSelf)
+    indices.push_back(fnTy->getNumParams());
+}
+
 void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
   // Emit any default argument generators.
   if (!isa<DestructorDecl>(AFD)) {
@@ -710,6 +788,49 @@ void SILGenModule::emitAbstractFuncDecl(AbstractFunctionDecl *AFD) {
     auto thunk = SILDeclRef(AFD).asForeign();
     if (!hasFunction(thunk))
       emitNativeToForeignThunk(thunk);
+  }
+
+  // SWIFT_ENABLE_TENSORFLOW
+  // If the declaration has a @differentiable(reverse) attribute, turn it into a
+  // SIL [reverse_differentiable] attribute with lowered primal and adjoint
+  // function names and lowered differentiation parameter indices.
+  //
+  // FIXME: Handle multiple @differentiable attributes.
+  if (auto *diffAttr = cast_or_null<DifferentiableAttr>(
+        AFD->getAttrs().getAttribute(DeclAttrKind::DAK_Differentiable))) {
+    switch (diffAttr->getMode()) {
+    case AutoDiffMode::Forward:
+      // TODO: Handle forward mode once [forward_differentiable] is implemented.
+      llvm_unreachable("Unimplemented");
+      break;
+    case AutoDiffMode::Reverse: {
+      auto silOriginalFn = getFunction(SILDeclRef(AFD), ForDefinition);
+      // If primal exists, get primal's name. Otherwise, set primal name to
+      // the original function's name.
+      // NOTE: the original function is a valid primal function: specifically,
+      // it is equivalent to a primal function which checkpoints no values
+      // except the original result. When no primal is explicitly specified,
+      // the original function is used as the primal.
+      StringRef primName;
+      if (auto *primFn = diffAttr->getPrimalFunction())
+        primName = getFunction(SILDeclRef(primFn), ForDefinition)->getName();
+      else
+        primName = silOriginalFn->getName();
+      // Get adjoint's name.
+      auto *adjointFn = diffAttr->getAdjointFunction();
+      assert(adjointFn && "Adjoint should've been type-checked and resolved.");
+      StringRef adjName =
+        getFunction(SILDeclRef(adjointFn), ForDefinition)->getName();
+      // Get lowered argument indices.
+      SmallVector<unsigned, 8> indices;
+      getLoweredDifferentiationIndices(*this, AFD, silOriginalFn, diffAttr,
+                                       indices);
+      silOriginalFn->addReverseDifferentiableAttr(
+        SILReverseDifferentiableAttr::create(M, /*sourceIndex*/ 0,
+                                             indices, primName, adjName));
+      break;
+    }
+    }
   }
 }
 

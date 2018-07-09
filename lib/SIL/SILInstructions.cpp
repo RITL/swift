@@ -23,6 +23,8 @@
 #include "swift/SIL/Projection.h"
 #include "swift/SIL/SILBuilder.h"
 #include "swift/SIL/SILCloner.h"
+// SWIFT_ENABLE_TENSORFLOW
+#include "swift/SIL/SILConstants.h"
 #include "swift/SIL/SILInstruction.h"
 #include "swift/SIL/SILModule.h"
 #include "swift/SIL/SILVisitor.h"
@@ -575,6 +577,56 @@ TryApplyInst *TryApplyInst::create(
   return ::new (buffer) TryApplyInst(loc, callee, substCalleeTy, subs, args,
                                      typeDependentOperands,
                                      normalBB, errorBB, specializationInfo);
+}
+
+/// SWIFT_ENABLE_TENSORFLOW
+GradientInst::GradientInst(SILModule &module, SILDebugLocation debugLoc,
+                           SILValue original, unsigned sourceIndex,
+                           ArrayRef<unsigned> paramIndices,
+                           bool seedable, bool preservingResult)
+  : InstructionBase(debugLoc, getGradientSILType(module, original, sourceIndex,
+                                                 paramIndices, seedable,
+                                                 preservingResult)),
+    SourceIndex(sourceIndex),
+    NumParamIndices(paramIndices.size()), Seedable(seedable),
+    PreservingResult(preservingResult), Operands(this, original) {
+  std::copy(paramIndices.begin(), paramIndices.end(),
+            getParameterIndicesData());
+}
+
+SILType GradientInst::getGradientSILType(SILModule &module, SILValue original,
+                                         unsigned sourceIndex,
+                                         ArrayRef<unsigned> paramIndices,
+                                         bool seedable,
+                                         bool preservingResult) {
+  // If parameter indices are empty, return an invalid type (empty tuple type).
+  // An "empty parameter indices" will be produced during verification.
+  if (paramIndices.empty()) {
+    auto invalidTy = TupleType::get({}, module.getASTContext());
+    return SILType::getPrimitiveObjectType(CanType(invalidTy));
+  }
+  SILReverseAutoDiffConfiguration config =
+    { sourceIndex, paramIndices, seedable, preservingResult };
+  auto origFnTy = original->getType().getAs<SILFunctionType>();
+  auto gradFnTy = origFnTy->getGradientType(config, module);
+  return SILType::getPrimitiveObjectType(gradFnTy->getCanonicalType());
+}
+
+GradientInst *
+GradientInst::create(SILModule &M, SILDebugLocation debugLoc,
+                     SILValue original, unsigned sourceIndex,
+                     ArrayRef<unsigned> paramIndices,
+                     bool seedable, bool preservingResult) {
+  unsigned size = sizeof(GradientInst) + paramIndices.size() * sizeof(unsigned);
+  void *buffer = M.allocateInst(size, alignof(GradientInst));
+  return ::new (buffer) GradientInst(M, debugLoc, original, sourceIndex,
+                                     paramIndices, seedable, preservingResult);
+}
+
+ArrayRef<unsigned> GradientInst::getParameterIndices() const {
+  return {
+    const_cast<GradientInst *>(this)->getParameterIndicesData(), NumParamIndices
+  };
 }
 
 FunctionRefInst::FunctionRefInst(SILDebugLocation Loc, SILFunction *F)
@@ -2411,3 +2463,55 @@ DestructureTupleInst *DestructureTupleInst::create(SILModule &M,
   return ::new (Buffer)
       DestructureTupleInst(M, Loc, Operand, Types, OwnershipKinds);
 }
+
+// SWIFT_ENABLE_TENSORFLOW
+GraphOperationInst::GraphOperationInst(
+    SILModule &M, SILDebugLocation loc, Identifier name,
+    ArrayRef<SILValue> arguments, ArrayRef<GraphOperationAttribute> attrs,
+    ArrayRef<SILType> resultTypes,
+    ArrayRef<ValueOwnershipKind> resultOwnerships) :
+  InstructionBase(loc),
+  MultipleValueInstructionTrailingObjects(this, resultTypes,
+                                          resultOwnerships),
+  Name(name), NumOperands(arguments.size())
+{
+  auto allOperands = getAllOperands();
+  for (unsigned i : indices(arguments))
+    new (&allOperands[i]) Operand(this, arguments[i]);
+  auto attrBuf = new GraphOperationAttribute[attrs.size()];
+  Attributes = MutableArrayRef<GraphOperationAttribute>(
+    static_cast<GraphOperationAttribute *>(attrBuf), attrs.size());
+  std::uninitialized_copy(attrs.begin(), attrs.end(), Attributes.data());
+}
+
+GraphOperationInst::~GraphOperationInst() {
+  for (auto &operand : getAllOperands())
+    operand.~Operand();
+  delete[] getAttributes().data();
+}
+
+GraphOperationInst *GraphOperationInst::create(
+    SILModule &M, SILDebugLocation loc, Identifier name,
+    ArrayRef<SILValue> arguments, ArrayRef<GraphOperationAttribute> attributes,
+    ArrayRef<SILType> resultTypes) {
+  llvm::SmallVector<ValueOwnershipKind, 4> resultOwnerships;
+  for (auto resultType : resultTypes) {
+    auto ownership = resultType.isTrivial(M)
+      ? ValueOwnershipKind::Trivial : ValueOwnershipKind::Owned;
+    resultOwnerships.push_back(ownership);
+  }
+
+  unsigned size =
+    totalSizeToAlloc<MultipleValueInstruction *, GraphOperationResult, Operand>(
+      1, resultTypes.size(), arguments.size());
+  void *buffer = M.allocateInst(size, alignof(GraphOperationInst));
+  return ::new (buffer) GraphOperationInst(M, loc, name, arguments, attributes,
+                                           resultTypes, resultOwnerships);
+}
+
+Optional<SymbolicValue> GraphOperationInst::getAttribute(StringRef name) {
+  for (auto attr : getAttributes())
+    if (attr.name.is(name))
+      return attr.value;
+  return None;
+};

@@ -651,6 +651,20 @@ SILCloner<ImplClass>::visitEndApplyInst(EndApplyInst *Inst) {
                                 getOpValue(Inst->getOperand())));
 }
 
+/// SWIFT_ENABLE_TENSORFLOW
+template<typename ImplClass>
+void
+SILCloner<ImplClass>::visitGradientInst(GradientInst *Inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+  doPostProcess(Inst,
+    getBuilder().createGradient(getOpLocation(Inst->getLoc()),
+                                getOpValue(Inst->getOriginal()),
+                                Inst->getSourceIndex(),
+                                Inst->getParameterIndices(),
+                                Inst->isSeedable(),
+                                Inst->isPreservingResult()));
+}
+
 template<typename ImplClass>
 void
 SILCloner<ImplClass>::visitFunctionRefInst(FunctionRefInst *Inst) {
@@ -1598,6 +1612,21 @@ void SILCloner<ImplClass>::visitDestructureTupleInst(
       Inst,
       getBuilder().createDestructureTuple(getOpLocation(Inst->getLoc()),
                                           getOpValue(Inst->getOperand())));
+}
+
+// SWIFT_ENABLE_TENSORFLOW
+template <typename ImplClass>
+void SILCloner<ImplClass>::visitGraphOperationInst(GraphOperationInst *Inst) {
+  getBuilder().setCurrentDebugScope(getOpScope(Inst->getDebugScope()));
+  auto arguments =
+    getOpValueArray<4>(OperandValueArrayRef(Inst->getArguments()));
+  SmallVector<SILType, 4> resultTypes;
+  for (auto result : Inst->getResults())
+    resultTypes.push_back(result->getType());
+  doPostProcess(Inst,
+      getBuilder().createGraphOperation(getOpLocation(Inst->getLoc()),
+                                        Inst->getName(), arguments,
+                                        Inst->getAttributes(), resultTypes));
 }
 
 template <typename ImplClass>

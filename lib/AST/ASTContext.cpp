@@ -138,6 +138,13 @@ struct ASTContext::Implementation {
   /// The AnyObject type.
   CanType AnyObjectType;
 
+  // SWIFT_ENABLE_TENSORFLOW
+  /// The declaration of TensorFlow.TensorHandle<T>.
+  ClassDecl *TensorHandleDecl = nullptr;
+
+  /// The declaration of Swift._AutoDiffTape<T>.
+  ClassDecl *AutoDiffTapeDecl = nullptr;
+
 #define KNOWN_STDLIB_TYPE_DECL(NAME, DECL_CLASS, NUM_GENERIC_PARAMS) \
   /** The declaration of Swift.NAME. */ \
   DECL_CLASS *NAME##Decl = nullptr;
@@ -742,6 +749,34 @@ CanType ASTContext::getAnyObjectType() const {
   return getImpl().AnyObjectType;
 }
 
+// SWIFT_ENABLE_TENSORFLOW
+/// Retrieve the decl for TensorFlow.TensorHandle iff the TensorFlow module has
+/// been imported.  Otherwise, this returns null.
+ClassDecl *ASTContext::getTensorHandleDecl() const {
+  if (getImpl().TensorHandleDecl)
+    return getImpl().TensorHandleDecl;
+
+  // See if the TensorFlow module was imported.  If not, return null.
+  auto tfModule = getLoadedModule(getIdentifier("TensorFlow"));
+  if (!tfModule)
+    return nullptr;
+
+  SmallVector<ValueDecl *, 1> results;
+  tfModule->lookupValue({ }, getIdentifier("TensorHandle"),
+                        NLKind::UnqualifiedLookup, results);
+
+  for (auto result : results)
+    if (auto CD = dyn_cast<ClassDecl>(result))
+      return getImpl().TensorHandleDecl = CD;
+  return nullptr;
+}
+
+CanType ASTContext::getAutoDiffTapeType() const {
+  if (auto adtDecl = get_AutoDiffTapeDecl())
+    return adtDecl->getDeclaredType()->getCanonicalType();
+  return CanType();
+}
+
 CanType ASTContext::getNeverType() const {
   auto neverDecl = getNeverDecl();
   if (!neverDecl)
@@ -832,6 +867,12 @@ ProtocolDecl *ASTContext::getProtocol(KnownProtocolKind kind) const {
     break;
   case KnownProtocolKind::CFObject:
     M = getLoadedModule(Id_CoreFoundation);
+    break;
+  // SWIFT_ENABLE_TENSORFLOW
+  case KnownProtocolKind::AccelerableByTensorFlow:
+  case KnownProtocolKind::TensorSendableReceivable:
+  case KnownProtocolKind::TensorProtocol:
+    M = getLoadedModule(getIdentifier("TensorFlow"));
     break;
   default:
     M = getStdlibModule();

@@ -56,6 +56,37 @@ void SILFunction::addSpecializeAttr(SILSpecializeAttr *Attr) {
   }
 }
 
+/// SWIFT_ENABLE_TENSORFLOW
+SILReverseDifferentiableAttr::
+SILReverseDifferentiableAttr(unsigned sourceIndex,
+                             ArrayRef<unsigned> paramIndices,
+                             StringRef primalName,
+                             StringRef adjointName)
+  : SourceIndex(sourceIndex), NumParamIndices(paramIndices.size()),
+    PrimalName(primalName), AdjointName(adjointName) {
+  std::copy(paramIndices.begin(), paramIndices.end(), getParamIndicesData());
+}
+
+SILReverseDifferentiableAttr *
+SILReverseDifferentiableAttr::create(SILModule &M,
+                                     unsigned sourceIndex,
+                                     ArrayRef<unsigned> paramIndices,
+                                     StringRef primalName,
+                                     StringRef adjointName) {
+  size_t size = sizeof(SILReverseDifferentiableAttr)
+    + paramIndices.size() * sizeof(unsigned);
+  void *mem = M.allocate(size, alignof(SILReverseDifferentiableAttr));
+  return ::new (mem) SILReverseDifferentiableAttr(sourceIndex, paramIndices,
+                                                  primalName, adjointName);
+}
+
+ArrayRef<unsigned> SILReverseDifferentiableAttr::getParamIndices() const {
+  return {
+    const_cast<SILReverseDifferentiableAttr *>(this)->getParamIndicesData(),
+    NumParamIndices
+  };
+}
+
 SILFunction *SILFunction::create(
     SILModule &M, SILLinkage linkage, StringRef name,
     CanSILFunctionType loweredType, GenericEnvironment *genericEnv,

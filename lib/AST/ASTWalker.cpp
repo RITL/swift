@@ -453,6 +453,18 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
     return E;
   }
 
+  // SWIFT_ENABLE_TENSORFLOW
+  Expr *visitReverseAutoDiffExpr(ReverseAutoDiffExpr *E) {
+    Expr *originalExpr = doIt(E->getOriginalExpr());
+    if (!originalExpr) return nullptr;
+    E->setOriginalExpr(originalExpr);
+    return E;
+  }
+
+  Expr *visitAdjointExpr(AdjointExpr *E) {
+    return E;
+  }
+
   Expr *visitObjectLiteralExpr(ObjectLiteralExpr *E) {
     HANDLE_SEMANTIC_EXPR(E);
 
@@ -1034,6 +1046,15 @@ class Traversal : public ASTVisitor<Traversal, Expr*, Stmt*,
   }
 
   Expr *visitKeyPathDotExpr(KeyPathDotExpr *E) { return E; }
+
+  Expr *visitPoundAssertExpr(PoundAssertExpr *E) {
+    if (auto *condition = doIt(E->getCondition())) {
+      E->setCondition(condition);
+    } else {
+      return nullptr;
+    }
+    return E;
+  }
 
   //===--------------------------------------------------------------------===//
   //                           Everything Else

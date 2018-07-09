@@ -5810,6 +5810,8 @@ public:
     UNINTERESTING_ATTR(Alignment)
     UNINTERESTING_ATTR(CDecl)
     UNINTERESTING_ATTR(Consuming)
+    // SWIFT_ENABLE_TENSORFLOW
+    UNINTERESTING_ATTR(DynamicCallable)
     UNINTERESTING_ATTR(DynamicMemberLookup)
     UNINTERESTING_ATTR(SILGenName)
     UNINTERESTING_ATTR(Exported)
@@ -5849,6 +5851,11 @@ public:
     UNINTERESTING_ATTR(SwiftNativeObjCRuntimeBase)
     UNINTERESTING_ATTR(ShowInInterface)
     UNINTERESTING_ATTR(Specialize)
+
+    // SWIFT_ENABLE_TENSORFLOW
+    UNINTERESTING_ATTR(Differentiable)
+    UNINTERESTING_ATTR(CompilerEvaluable)
+    UNINTERESTING_ATTR(TensorFlowGraph)
 
     // These can't appear on overridable declarations.
     UNINTERESTING_ATTR(Prefix)
